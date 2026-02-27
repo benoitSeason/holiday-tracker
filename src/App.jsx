@@ -27,6 +27,10 @@ const db = {
   getHolidays: () => sbFetch("/holidays?select=*&order=start_date.desc"),
   addHoliday: (data) => sbFetch("/holidays", { method: "POST", body: JSON.stringify(data) }),
   deleteHoliday: (id) => sbFetch(`/holidays?id=eq.${id}`, { method: "DELETE" }),
+  updateHoliday: (id, data) => sbFetch(`/holidays?id=eq.${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  }),
 };
 
 const COLORS = ["#E84855","#3A86FF","#06D6A0","#FFB703","#9B5DE5","#F77F00","#4CC9F0","#43AA8B"];
@@ -68,6 +72,31 @@ function todayStr() {
   return d.toISOString().split("T")[0];
 }
 
+// ── Status Badge ──────────────────────────────────────────────────────────
+const STATUS_STYLES = {
+  "En attente": { background: "#FFF8E1", color: "#F59E0B" },
+  "Confirmé":   { background: "#E8FFF3", color: "#06D6A0" },
+  "Refusé":     { background: "#FFF0F0", color: "#E84855" },
+  "Terminé":    { background: "#F0F0F0", color: "#888" },
+};
+
+const ALL_STATUSES = ["En attente", "Confirmé", "Refusé", "Terminé"];
+
+// Auto-derive "Terminé" for past holidays that haven't been manually set
+function effectiveStatus(h, today) {
+  if (h.end_date < today && (h.status === "En attente" || !h.status)) return "Terminé";
+  return h.status || "En attente";
+}
+
+function StatusBadge({ status }) {
+  const s = STATUS_STYLES[status] || STATUS_STYLES["En attente"];
+  return (
+    <span style={{ ...s, fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, textTransform: "uppercase", letterSpacing: 0.4, whiteSpace: "nowrap" }}>
+      {status || "En attente"}
+    </span>
+  );
+}
+
 // ── KPI Card ───────────────────────────────────────────────────────────────
 function KpiCard({ label, value, sub, accent }) {
   return (
@@ -107,7 +136,7 @@ export default function App() {
   const [view, setView] = useState("overview");
   const [activeTab, setActiveTab] = useState("overview"); // "overview" | "dashboard"
   const [newEmp, setNewEmp] = useState("");
-  const [form, setForm] = useState({ employeeId: "", start: "", end: "", note: "" });
+  const [form, setForm] = useState({ employeeId: "", start: "", end: "", note: "", status: "En attente" });
   const [filterEmp, setFilterEmp] = useState("all");
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [annualAllowance, setAnnualAllowance] = useState(25);
@@ -152,9 +181,10 @@ export default function App() {
         end_date: form.end,
         days,
         note: form.note || null,
+        status: form.status || "En attente",
       });
       setHolidays(prev => [h, ...prev]);
-      setForm({ employeeId: "", start: "", end: "", note: "" });
+      setForm({ employeeId: "", start: "", end: "", note: "", status: "En attente" });
       setView("overview");
     } catch (e) { setError("Impossible d'enregistrer le congé."); }
     setSaving(false);
@@ -165,6 +195,13 @@ export default function App() {
       await db.deleteHoliday(id);
       setHolidays(prev => prev.filter(h => h.id !== id));
     } catch (e) { setError("Impossible de supprimer."); }
+  }
+
+  async function updateHolidayStatus(id, status) {
+    try {
+      await db.updateHoliday(id, { status });
+      setHolidays(prev => prev.map(h => h.id === id ? { ...h, status } : h));
+    } catch (e) { setError("Impossible de modifier le statut."); }
   }
 
   async function deleteEmployee(id) {
@@ -276,7 +313,7 @@ export default function App() {
           <button
             style={{ ...styles.btnPrimary, opacity: employees.length === 0 ? 0.4 : 1 }}
             disabled={employees.length === 0}
-            onClick={() => { setForm({ employeeId: employees[0]?.id || "", start: "", end: "", note: "" }); setView("add-holiday"); }}
+            onClick={() => { setForm({ employeeId: employees[0]?.id || "", start: "", end: "", note: "", status: "En attente" }); setView("add-holiday"); }}
           >+ Congé</button>
         </div>
       </header>
@@ -340,6 +377,7 @@ export default function App() {
                       <th style={styles.th}>Début</th>
                       <th style={styles.th}>Fin</th>
                       <th style={styles.th}>Jours</th>
+                      <th style={styles.th}>Statut</th>
                       <th style={styles.th}>Note</th>
                       <th style={styles.th}></th>
                     </tr>
@@ -348,6 +386,8 @@ export default function App() {
                     {filteredHolidays.map(h => {
                       const emp = empMap[h.employee_id];
                       const isActive = h.start_date <= today && h.end_date >= today;
+                      const effStatus = effectiveStatus(h, today);
+                      const statusStyle = STATUS_STYLES[effStatus] || STATUS_STYLES["En attente"];
                       return (
                         <tr key={h.id} className="table-row">
                           <td style={styles.td}>
@@ -359,6 +399,34 @@ export default function App() {
                           <td style={styles.td}>{formatDate(h.start_date)}</td>
                           <td style={styles.td}>{formatDate(h.end_date)}</td>
                           <td style={{ ...styles.td, fontWeight: 600 }}>{h.days}</td>
+                          <td style={styles.td}>
+                            <select
+                              value={effStatus}
+                              onChange={e => updateHolidayStatus(h.id, e.target.value)}
+                              style={{
+                                ...statusStyle,
+                                fontSize: 10,
+                                fontWeight: 700,
+                                padding: "2px 6px",
+                                borderRadius: 20,
+                                textTransform: "uppercase",
+                                letterSpacing: 0.4,
+                                border: "none",
+                                cursor: "pointer",
+                                outline: "none",
+                                appearance: "none",
+                                WebkitAppearance: "none",
+                                paddingRight: 18,
+                                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 8 8'%3E%3Cpath fill='%23888' d='M0 2l4 4 4-4z'/%3E%3C/svg%3E")`,
+                                backgroundRepeat: "no-repeat",
+                                backgroundPosition: "right 5px center",
+                                backgroundColor: statusStyle.background,
+                                color: statusStyle.color,
+                              }}
+                            >
+                              {ALL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                            </select>
+                          </td>
                           <td style={{ ...styles.td, color: "#888" }}>{h.note || "—"}</td>
                           <td style={styles.td}>
                             {isActive && <span style={styles.activePill}>Actif</span>}
@@ -550,11 +618,12 @@ export default function App() {
                         <div style={{ ...styles.avatar, background: color, width: 28, height: 28, fontSize: 11 }}>{emp ? getInitials(emp.name) : "?"}</div>
                         <div>
                           <div style={{ fontWeight: 600, fontSize: 13 }}>{emp?.name || "Unknown"}</div>
-                          <div style={{ fontSize: 11, color: "#888" }}>{formatDate(h.start_date)} → {formatDate(h.end_date)} · {h.days}d</div>
+                          <div style={{ fontSize: 11, color: "#888" }}>{formatDate(h.start_date)} → {formatDate(h.end_date)} · {h.days}j</div>
                         </div>
                       </div>
-                      <div style={{ textAlign: "right", flexShrink: 0 }}>
+                      <div style={{ textAlign: "right", flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
                         <div style={{ fontWeight: 700, fontSize: 13, color }}>{daysUntil > 0 ? `dans ${daysUntil}j` : "Demain"}</div>
+                        <StatusBadge status={effectiveStatus(h, today)} />
                         {h.note && <div style={{ fontSize: 11, color: "#aaa" }}>{h.note}</div>}
                       </div>
                     </div>
@@ -578,8 +647,9 @@ export default function App() {
                           <div style={{ fontSize: 11, color: "#888" }}>{formatDate(h.start_date)} → {formatDate(h.end_date)}</div>
                         </div>
                       </div>
-                      <div style={{ textAlign: "right", flexShrink: 0 }}>
-                        <div style={{ fontWeight: 700, fontSize: 13, color: "#111" }}>{h.days}d</div>
+                      <div style={{ textAlign: "right", flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                        <div style={{ fontWeight: 700, fontSize: 13, color: "#111" }}>{h.days}j</div>
+                        <StatusBadge status={effectiveStatus(h, today)} />
                         {h.note && <div style={{ fontSize: 11, color: "#aaa" }}>{h.note}</div>}
                       </div>
                     </div>
@@ -661,6 +731,12 @@ export default function App() {
             {form.start && form.end && diffDays(form.start, form.end) > 0 && (
               <div style={styles.preview}>{diffDays(form.start, form.end)} jour(s) calendaire(s)</div>
             )}
+            <label style={styles.label}>Statut</label>
+            <select style={styles.input} value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>
+              <option value="En attente">En attente</option>
+              <option value="Confirmé">Confirmé</option>
+              <option value="Refusé">Refusé</option>
+            </select>
             <label style={styles.label}>Note (facultatif)</label>
             <input style={styles.input} placeholder="ex : Vacances d'été" value={form.note} onChange={e => setForm({ ...form, note: e.target.value })} />
             <div style={styles.modalActions}>
